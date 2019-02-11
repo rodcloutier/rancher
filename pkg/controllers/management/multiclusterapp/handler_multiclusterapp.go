@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/cache"
 )
 
 type MCAppController struct {
@@ -28,7 +29,9 @@ type MCAppController struct {
 	crtbLister        v3.ClusterRoleTemplateBindingLister
 	rtLister          v3.RoleTemplateLister
 	gDNSs             v3.GlobalDNSInterface
-	userManager       user.Manager
+	users             v3.UserInterface
+	//userIndexer       cache.Indexer
+	userManager user.Manager
 }
 
 type MCAppRevisionController struct {
@@ -49,6 +52,13 @@ type ClusterController struct {
 
 func Register(ctx context.Context, management *config.ManagementContext) {
 	mcApps := management.Management.MultiClusterApps("")
+	//userInformer := management.Management.Users("").Controller().Informer()
+	//userIndexers := map[string]cache.IndexFunc{
+	//	"auth.management.cattle.io/userByPrincipal": userByPrincipal,
+	//}
+	//if err := userInformer.AddIndexers(userIndexers); err != nil {
+	//	return
+	//}
 	m := MCAppController{
 		multiClusterApps:  mcApps,
 		managementContext: management,
@@ -59,6 +69,8 @@ func Register(ctx context.Context, management *config.ManagementContext) {
 		rtLister:          management.Management.RoleTemplates("").Controller().Lister(),
 		gDNSs:             management.Management.GlobalDNSs(""),
 		userManager:       management.UserManager,
+		users:             management.Management.Users(""),
+		//userIndexer:       userInformer.GetIndexer(),
 	}
 	r := MCAppRevisionController{
 		managementContext: management,
@@ -81,8 +93,29 @@ func Register(ctx context.Context, management *config.ManagementContext) {
 	clusters.AddHandler(ctx, "management-mcapp-cluster-controller", c.sync)
 }
 
+func userByPrincipal(obj interface{}) ([]string, error) {
+	u, ok := obj.(*v3.User)
+	if !ok {
+		return []string{}, nil
+	}
+
+	return u.PrincipalIDs, nil
+}
+
 func (mc *MCAppController) sync(key string, mcapp *v3.MultiClusterApp) (runtime.Object, error) {
 	if mcapp == nil || mcapp.DeletionTimestamp != nil {
+		// multiclusterapp is being deleted, remove the sys acc created for it
+		_, mcappName, err := cache.SplitMetaNamespaceKey(key)
+		if err != nil {
+			return nil, err
+		}
+		u, err := mc.userManager.CheckCache(fmt.Sprintf("system://%s", mcappName))
+		if err != nil && strings.Contains(err.Error(), "can't find unique user for principal") {
+			return nil, err
+		}
+		if err := mc.users.Delete(u.Name, &v1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsGone(err) {
+			return nil, err
+		}
 		return nil, nil
 	}
 	metaAccessor, err := meta.Accessor(mcapp)
@@ -160,37 +193,6 @@ func (mc *MCAppController) sync(key string, mcapp *v3.MultiClusterApp) (runtime.
 					} else {
 						return nil, err
 					}
-				}
-			}
-		}
-
-		for _, p := range mcapp.Spec.Targets {
-			if p.ProjectName == "" {
-				continue
-			}
-			split := strings.SplitN(p.ProjectName, ":", 2)
-			if len(split) != 2 {
-				return nil, fmt.Errorf("invalid project name")
-			}
-			projectName := split[1]
-			// check if these prtbs already exist
-			_, err := mc.prtbLister.Get(projectName, prtbName)
-			if err != nil {
-				if apierrors.IsNotFound(err) {
-					_, err := mc.prtbs.Create(&v3.ProjectRoleTemplateBinding{
-						ObjectMeta: v1.ObjectMeta{
-							Name:      prtbName,
-							Namespace: projectName,
-						},
-						UserName:         systemUser.Name,
-						RoleTemplateName: r,
-						ProjectName:      p.ProjectName,
-					})
-					if err != nil && !apierrors.IsAlreadyExists(err) {
-						return nil, err
-					}
-				} else {
-					return nil, err
 				}
 			}
 		}

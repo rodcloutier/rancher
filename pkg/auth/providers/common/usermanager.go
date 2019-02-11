@@ -144,7 +144,7 @@ func (m *userManager) CheckAccess(accessMode string, allowedPrincipalIDs []strin
 	}
 
 	if accessMode == "required" || accessMode == "restricted" {
-		user, err := m.checkCache(userPrincipalID)
+		user, err := m.CheckCache(userPrincipalID)
 		if err != nil {
 			return false, err
 		}
@@ -250,7 +250,7 @@ func (m *userManager) EnsureUser(principalName, displayName string) (*v3.User, e
 	var labelSet labels.Set
 
 	// First check the local cache
-	user, err = m.checkCache(principalName)
+	user, err = m.CheckCache(principalName)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +497,7 @@ func (m *userManager) createUsersRoleAnnotation() (map[string]string, error) {
 	return annotations, nil
 }
 
-func (m *userManager) checkCache(principalName string) (*v3.User, error) {
+func (m *userManager) CheckCache(principalName string) (*v3.User, error) {
 	users, err := m.userIndexer.ByIndex(userByPrincipalIndex, principalName)
 	if err != nil {
 		return nil, err
